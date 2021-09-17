@@ -1,0 +1,23 @@
+version: '3'
+services:
+  ms-0:
+    image: nachocode/experiments-suite:cache
+    networks:
+      - my-net
+    volumes:
+      - ./logs:/app/logs:rw
+      - ./workloads:/app/workloads:rw
+      - ./source:/app/source:rw
+    environment:
+      - NODE_ID=ex-0
+      - WORKLOAD_PATH=/app/workloads
+      - WORKLOAD_FILENAME=workload_0.csv
+      - STATIC_EXTENSION=bin
+      - SOURCE_FOLDER=/app/source
+      - CACHE_NODES.0.host=localhost
+      - CACHE_NODES.0.port=8081
+      - LOG_PATH=/app/logs
+
+networks:
+  my-net:
+    external: true
