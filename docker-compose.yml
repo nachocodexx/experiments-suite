@@ -14,8 +14,8 @@ services:
       - WORKLOAD_FILENAME=workload_0.csv
       - STATIC_EXTENSION=bin
       - SOURCE_FOLDER=/app/source
-      - CACHE_NODES.0.host=localhost
-      - CACHE_NODES.0.port=8081
+      - CACHE_NODES.0.host=172.18.0.5
+      - CACHE_NODES.0.port=80
       - LOG_PATH=/app/logs
 
 networks:
