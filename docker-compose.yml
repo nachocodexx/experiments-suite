@@ -5,16 +5,18 @@ services:
     networks:
       - my-net
     volumes:
-      - ./logs:/app/logs:rw
-      - ./workloads:/app/workloads:rw
-      - ./source:/app/source:rw
+      - ./target/test/logs:/app/logs:rw
+      - ./target/test/workloads:/app/workloads:rw
+      - ./target/test/source:/app/source:rw
+      - ./target/test/sink:/app/sink:rw
     environment:
       - NODE_ID=ex-0
       - WORKLOAD_PATH=/app/workloads
-      - WORKLOAD_FILENAME=workload_0.csv
+      - WORKLOAD_FILENAME=workload_cache_0.csv
       - STATIC_EXTENSION=bin
       - SOURCE_FOLDER=/app/source
-      - CACHE_NODES.0.host=172.18.0.5
+      - SINK_FOLDER=/app/sink
+      - CACHE_NODES.0.host=172.18.0.3
       - CACHE_NODES.0.port=80
       - LOG_PATH=/app/logs
 
