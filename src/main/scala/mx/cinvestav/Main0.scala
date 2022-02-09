@@ -66,7 +66,7 @@ object Main0 extends IOApp{
       producerIndex      = ctx.config.producerIndex
       producerId         = s"producer-$producerIndex"
       _                  <- ctx.logger.debug(s"PRODUCER_START $producerId")
-      jsonStreams        = Stream.emits(WRITES_JSONs).covary[IO].evalMap(Helpers.readJsonStr)
+      jsonStreams        = Stream.emits(WRITES_JSONs).covary[IO].evalMap(Helpers.bytesToString)
       writes             = jsonStreams.evalMap(Helpers.decodeTraces).map(traces=>Stream.emits(traces).covary[IO])
       consumerUris       = Stream.range(0,ctx.config.consumers).covary[IO].map{ x=>
         val basePort   = ctx.config.consumerPort

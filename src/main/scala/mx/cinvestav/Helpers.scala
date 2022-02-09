@@ -20,16 +20,23 @@ import java.util.UUID
 import io.circe._
 import io.circe.generic.auto._
 import io.circe.syntax._
+
+import java.net.URL
 object Helpers {
 
    implicit class StreamPureOps[A](io:IO[A]){
      def pureS = Stream.eval(io)
    }
 
+  def toURL(u:String)(implicit ctx:AppContextv2) = {
+      val url = new URL(u)
+      (new URL(url.getProtocol,if(ctx.config.mode=="LOCAL") "localhost" else url.getHost,url.getPort,url.getPath)).toString
+  }
+
   def processWriteV3(client: Client[IO])(t:Trace,index:Long=0)(implicit ctx:AppContextv2) = {
     for {
       _              <- ctx.logger.debug(s"START_UPLOAD[$index] ${t.fileId}").pureS
-      waitingTime    = t.interArrivalTime.milliseconds
+      waitingTime    = t.waitingTime.milliseconds
       fileId         = t.fileId
       fileSize       = t.fileSize
       operationId    = t.operationId
@@ -38,22 +45,33 @@ object Helpers {
       response0      <- client.stream(writeRequestV2(ctx.config.poolUrl)(t))
       endAt0         <- IO.monotonic.map(_.toNanos).pureS
       serviceTime0   = endAt0 - startAt0
-      nodeURL        <- response0.as[String].pureS
+      nodeURL        <- response0.as[String].pureS.evalMap(x=>ctx.logger.debug(s"SELECTED_NODE_URL $x")*>Helpers.toURL(x).pure[IO])
       startAt1       <- IO.monotonic.map(_.toNanos).pureS
-      response1      <- client.stream(baseWriteRequest(nodeURL,t,ctx.config.sourceFolder,ctx.config.staticExtension))
+//      _              <- ctx.logger.debug(s"NODE_URL $nodeURL").pureS
+      response1      <- client
+        .stream(baseWriteRequest(nodeURL,t,ctx.config.sourceFolder,ctx.config.staticExtension))
+        .flatTap(
+          x=>ctx.logger.debug(x.status.toString).pureS
+        )
+        .onError{ e=>
+        ctx.logger.error(e.getMessage).pureS
+      }
+      headers0       = response0.headers
       headers1       = response1.headers
       responseNodeId = headers1.get(CIString("Node-Id")).map(_.head.value).getOrElse(config.nodeId)
       responseLevel  = headers1.get(CIString("Level")).map(_.head.value).getOrElse("LOCAL")
       endAt1         <- IO.monotonic.map(_.toNanos).pureS
       serviceTime1   = endAt1 - startAt1
-      _              <- ctx.logger.info(s"UPLOAD,$responseNodeId,$fileId,$fileSize,$serviceTime0,$serviceTime1,$responseLevel,$operationId").pureS
+      _waitingTime0  = headers0.get(CIString("Waiting-Time")).flatMap(_.head.value.toLongOption).getOrElse(0L)
+      _waitingTime1  = headers1.get(CIString("Waiting-Time")).flatMap(_.head.value.toLongOption).getOrElse(0L)
+      _              <- ctx.logger.info(s"UPLOAD,$responseNodeId,$fileId,$fileSize,$serviceTime0,$serviceTime1,${_waitingTime0},${_waitingTime1},$responseLevel,$operationId").pureS
       _              <- ctx.logger.debug("_____________________________________________").pureS
     } yield ()
   }
   def processWriteV2(client: Client[IO])(t:Trace)(implicit ctx:AppContextv2) = {
     for {
       _           <- ctx.logger.debug(s"START_UPLOAD ${t.fileId}")
-      waitingTime = t.interArrivalTime.milliseconds
+      waitingTime = t.waitingTime.milliseconds
       _           <- IO.sleep(waitingTime)
       beforeW     <- IO.monotonic.map(_.toNanos)
       response    <- client.stream(writeRequestV2(ctx.config.poolUrl)(t)).evalMap{ response0 =>
@@ -85,7 +103,7 @@ object Helpers {
     } yield response
   }
   def processWrite(t:Trace,client: Client[IO])(implicit ctx:AppContext)= for {
-    _               <- IO.sleep(t.interArrivalTime milliseconds)
+    _               <- IO.sleep(t.waitingTime milliseconds)
     beforeW         <- IO.monotonic.map(_.toNanos)
     responseHeaders <- client.stream(writeRequest(t)).evalMap{ response =>
       ctx.logger.debug("UPLOAD_RESPONSE_STATUS "+response.status) *> response.headers.pure[IO]
@@ -101,7 +119,7 @@ object Helpers {
 
   def processDownload(t:Trace,client: Client[IO])(implicit ctx:AppContext)= for {
     _ <- IO.unit
-    _            <- IO.sleep(t.interArrivalTime milliseconds)
+    _            <- IO.sleep(t.waitingTime milliseconds)
     beforeW      <- IO.monotonic.map(_.toNanos)
     downloadIO  =  client.toHttpApp.run(readRequest(t))
     res <- retryingOnFailures[Response[IO]](
@@ -130,12 +148,16 @@ object Helpers {
   } yield ()
 
 
-  def readJsonStr(WORKLOAD_PATH:Path): IO[String] = Files[IO]
+  def bytesToString(WORKLOAD_PATH:Path): IO[String] = Files[IO]
     .readAll(WORKLOAD_PATH,8192)
     .compile
     .to(Array)
     .map(new String(_,StandardCharsets.UTF_8))
 
+  def decodeConsumerFile(consumerFileStr:String) = io.circe.parser.decode[Map[String, Int]](consumerFileStr) match {
+    case Left(value) => IO.pure(Map.empty[String,Int])
+    case Right(value) => value.pure[IO]
+  }
   def decodeTraces(traceStr:String): IO[List[Trace]] = io.circe.parser.decode[List[Trace]](traceStr) match {
     case Left(e) => IO.pure(List.empty[Trace])
     case Right(trace) => trace.pure[IO]

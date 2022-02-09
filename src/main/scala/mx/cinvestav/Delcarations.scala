@@ -8,7 +8,7 @@ import io.circe.{Decoder, HCursor}
 import mx.cinvestav.Main1.{CacheWorkload, config}
 import mx.cinvestav.config.DefaultConfig
 import org.http4s.client.Client
-import org.http4s.{Header, Headers, MediaType, Method, Request, Uri, headers}
+import org.http4s.{Header, Headers, HttpVersion, MediaType, Method, Request, Uri, headers}
 import org.http4s.multipart.{Multipart, Part}
 import org.typelevel.ci.CIString
 import org.typelevel.log4cats.Logger
@@ -16,7 +16,7 @@ import org.typelevel.log4cats.Logger
 import java.io.File
 import java.util.UUID
 
-object Delcarations{
+object Delcarations {
 
   object Implicits {
 
@@ -37,7 +37,7 @@ object Delcarations{
         operationId = operationId,
         operationType = operationType,
         producerId = producerId,
-        interArrivalTime = waitingTime
+        waitingTime = waitingTime
       )
     } yield trace
   }
@@ -55,24 +55,30 @@ object Delcarations{
                      )
 
   case class DumbObject(objectId:String,size:Long)
+  case class DownloadTrace(dumbObject: DumbObject,downloads:Int)
 //  )
 //  implicit val randBasis =
   case class AppStateV2(
                          uploadObjects:List[DumbObject]=Nil,
-                         pareto:Pareto= Pareto(1,.95)(RandBasis.withSeed(12345))
+                         pareto:Pareto= Pareto(1,.95)(RandBasis.withSeed(12345)),
+                         fileDownloads:Map[String,Int] = Map.empty[String,Int]
                        )
   case class AppContext(config:DefaultConfig, state:Ref[IO,AppState], logger:Logger[IO],errorLogger:Logger[IO],queueLogger:Logger[IO])
   case class AppContextv2(config:DefaultConfig, state:Ref[IO,AppStateV2], logger:Logger[IO],errorLogger:Logger[IO],client:Client[IO])
 
   case class Trace(arrivalTime:Double, consumerId:String, fileId:String,
                    fileSize:Long, operationId:String, operationType:String,
-                   producerId:String, interArrivalTime:Double)
+                   producerId:String, waitingTime:Double) {
+    override def toString: String =
+      s"$operationType,$arrivalTime,$consumerId,$fileId,$fileSize,$operationId,$producerId,$waitingTime"
+  }
 
 
   def writeRequestV2(baseUrl:String)(trace:Trace):Request[IO] = {
     val req = Request[IO](
       method = Method.POST,
-      uri = Uri.unsafeFromString(s"$baseUrl/uploadv2"),
+      uri = Uri.unsafeFromString(s"$baseUrl/upload"),
+      httpVersion = HttpVersion.`HTTP/1.1`
     )
       .putHeaders(
         Headers(

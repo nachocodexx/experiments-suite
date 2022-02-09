@@ -3,11 +3,12 @@ package mx.cinvestav
 import breeze.stats.distributions.{Pareto, RandBasis, ThreadLocalRandomGenerator}
 import cats.implicits._
 import fs2.io.file.Files
-import mx.cinvestav.Delcarations.{DumbObject, baseReadRequestV2, consumerRequestv2, readRequestv2, writeRequestV2}
+import mx.cinvestav.Delcarations.{DownloadTrace, DumbObject, Trace, baseReadRequestV2, consumerRequestv2, readRequestv2, writeRequestV2}
 import org.apache.commons.math3.random.{JDKRandomGenerator, MersenneTwister, SynchronizedRandomGenerator}
 import org.typelevel.ci.CIString
 
 import java.util.UUID
+import scala.util.Random
 //
 import cats.effect._
 import cats.effect.kernel.Resource
@@ -16,6 +17,7 @@ import fs2.Stream
 //
 import mx.cinvestav.Delcarations.{AppContextv2, AppStateV2, consumerRequest}
 import mx.cinvestav.config.DefaultConfig
+import mx.cinvestav.commons.Implicits.StreamOps
 //
 import org.http4s.HttpRoutes
 import org.http4s.blaze.client.BlazeClientBuilder
@@ -45,57 +47,92 @@ object Main extends IOApp{
     .withSocketReuseAddress(true)
     .withConnectTimeout(5 minutes)
     .resource
+
   implicit val unsafeLogger: SelfAwareStructuredLogger[IO] = Slf4jLogger.getLogger[IO]
   val unsafeErrorLogger: SelfAwareStructuredLogger[IO] = Slf4jLogger.getLoggerFromName("error")
-  implicit class StreamOpsV[A](io:IO[A]){
-    def pureS:Stream[IO,A] = Stream.eval(io)
-  }
 
   final val SINK_PATH                = Paths.get(config.sinkFolder)
+  final val SOURCE_PATH              = Paths.get(config.sourceFolder)
   //
   def producer()={
     val BASE_FOLDER_PATH         = Paths.get(config.workloadFolder)
-    val BASE_FOLDER_FILE         = BASE_FOLDER_PATH.toFile
     val WRITE_BASE_FOLDER_PATH   = BASE_FOLDER_PATH.resolve("writes")
     val WRITES_JSONs: List[Path] = WRITE_BASE_FOLDER_PATH.toFile.listFiles().toList.map(_.toPath)
     for {
-
+//  _________________________________________________________________________________
       (client,finalizer) <- clientResource.allocated
       startTime          <- IO.monotonic.map(_.toSeconds)
-      initState          = AppStateV2()
+      initState          =  AppStateV2()
       state              <- IO.ref(initState)
-      ctx                = AppContextv2(config=config,state=state,logger=unsafeLogger,errorLogger = unsafeErrorLogger,client=client)
-      producerIndex      = ctx.config.producerIndex
-      producerId         = s"producer-$producerIndex"
+      ctx                =  AppContextv2(config=config,state=state,logger=unsafeLogger,errorLogger = unsafeErrorLogger,client=client)
+      producerIndex      =  ctx.config.producerIndex
+      producerId         =  s"producer-$producerIndex"
       _                  <- ctx.logger.debug(s"PRODUCER_START $producerId")
-      jsonStreams        = Stream.emits(WRITES_JSONs).covary[IO].evalMap(Helpers.readJsonStr)
+//  ________________________________________________________________________________
+      jsonStreams        = Stream.emits(WRITES_JSONs).covary[IO].evalMap(Helpers.bytesToString)
       writes             = jsonStreams.evalMap(Helpers.decodeTraces).map(traces=>Stream.emits(traces).covary[IO])
       consumerUris       = Stream.range(0,ctx.config.consumers).covary[IO].map{ x=>
-        val basePort   = ctx.config.consumerPort
-        val port       = basePort+x
-        val consumerId = if(ctx.config.level == "LOCAL") "localhost" else s"consumer-$x"
-        val uri        = if(ctx.config.level == "LOCAL") s"http://$consumerId:$port" else s"http://$consumerId:$basePort"
+        val basePort     = ctx.config.consumerPort
+        val port         = basePort+x
+        val consumerId   = if(ctx.config.level == "LOCAL") "localhost" else s"consumer-$x"
+        val uri          = if(ctx.config.level == "LOCAL") s"http://$consumerId:$port" else s"http://$consumerId:$basePort"
         uri
       }
       consumersReqs      = (dumbObject:List[DumbObject]) => consumerUris.map(uri=>consumerRequestv2(uri,dumbObject))
-//      consumersReqsv2      = (dumbObject:DumbObject) => consumerUris.map(uri=>consumerRequest(uri,dumbObject))
-      ts <- writes.flatMap(identity).zipWithIndex.flatMap{
-        case (t,index)=>
-        Helpers.processWriteV3(ctx.client)(t,index=index)(ctx).map(_=>t)
-//          .zipWithIndex
-//          .evalMap{
-//            case(r,index)=>
-//                for {
-//                  _              <- ctx.logger.debug(s"[$index] UPLOAD_END ${t.fileId}")
-//                } yield t
-//          }
-      }.compile.to(List)
+//  ________________________________________________________________________________
+      ts <- if (ctx.config.writeDebug) writes.flatMap(identity).zipWithIndex.evalMap{
+        case (t,index) => ctx.logger.debug(s"TRACE[$index] $t")
+      }.compile.drain.map(_=>List.empty[Trace])
+      else {
+        if(ctx.config.producerMode != "CONSTANT") for {
+          ts <- writes.flatMap(identity).zipWithIndex.flatMap{
+              case (t,index)=>
+                Helpers.processWriteV3(ctx.client)(t,index=index)(ctx).map(_=>t)
+
+            }.compile.to(List)
+        } yield ts
+        else {
+          for {
+            _             <- IO.unit
+            period        = ctx.config.producerRate.milliseconds
+            rand          = new Random()
+            fileIdAndSize = SOURCE_PATH.toFile.listFiles().toList.map{ p=>
+              (p.getName,p.length)
+            }
+//          ________________________________________________________
+            _ <- ctx.logger.debug(fileIdAndSize.toString)
+            fileIds   = fileIdAndSize.map(_._1)
+            fileSizes = fileIdAndSize.map(_._2)
+            _       <- Stream.awakeDelay[IO](period = period).flatMap{ arrivalTime =>
+              val consumerId  = s"consumer-0"
+              val N           = fileIds.length
+              val fileIndex = rand.nextInt(N)
+              val fileId      = fileIds(fileIndex)
+              val fileSize    = fileSizes(fileIndex)
+              val t = Trace(
+                arrivalTime   = arrivalTime.toMillis,
+                consumerId    = consumerId,
+                fileId        = fileId,
+                fileSize      = fileSize,
+                operationId   = UUID.randomUUID().toString,
+                operationType = "W",
+                producerId    = ctx.config.nodeId,
+                waitingTime   = ctx.config.producerRate
+              )
+              for{
+                _ <- ctx.logger.debug(t.toString).pureS
+              } yield ()
+//              IO.unit.pureS
+            }.compile.drain
+            ts = List.empty[Trace]
+          } yield ts
+        }
+      }
 //    __________________________________________
-      dumbObjs = ts.map(t=>DumbObject(t.fileId,t.fileSize))
+      dumbObjs        = ts.map(t=>DumbObject(t.fileId,t.fileSize))
       endTime         <- IO.monotonic.map(_.toSeconds)
-      _               <- ctx.logger.info(s"TOTAL_TIME,0,0,0,0,0,0,${endTime - startTime}")
-      _               <- consumersReqs(dumbObjs).flatMap(ctx.client.stream).compile.drain
-//        Stream.emits(ts).map(t=>DumbObject(t.fileId,t.fileSize)).flatMap(dumObj=>).compile.drain
+      _               <- ctx.logger.debug(s"TOTAL_TIME,0,0,0,0,0,0,${endTime - startTime}")
+      _               <- if (ctx.config.readDebug ) IO.unit else consumersReqs(dumbObjs).flatMap(ctx.client.stream).compile.drain
       _               <- finalizer
     } yield ExitCode.Success
   }
@@ -113,30 +150,115 @@ object Main extends IOApp{
     },
     "/v2/consume" -> HttpRoutes.of[IO]{
       case req@POST -> Root => for {
-        _           <- ctx.logger.debug(s"START_CONSUMING")
+        _            <- ctx.logger.debug(s"START_CONSUMING")
         currentState <- ctx.state.get
-        headers     = req.headers
-        objectSizes = headers.get(CIString("Object-Size")).map(_.map(_.value)).map(_.map(_.toLong)).get
-        objectIds   = headers.get(CIString("Object-Id")).map(_.map(_.value)).get
-        zipped      = (objectIds zip objectSizes).map(DumbObject.tupled).toList
-        _           <- ctx.state.update(s=>s.copy(uploadObjects = s.uploadObjects.toSet.union(zipped.toSet).toList ))
+        headers      = req.headers
+        objectSizes  = headers.get(CIString("Object-Size")).map(_.map(_.value)).map(_.map(_.toLong)).get
+        objectIds    = headers.get(CIString("Object-Id")).map(_.map(_.value)).get
+        _            <- ctx.logger.debug(s"OBJECT_IDS $objectIds")
+        dumbObjects       = (objectIds zip objectSizes).map(DumbObject.tupled).toList
+        //      _______________________________________________________
+        _            <- ctx.state.update(s=>
+          s.copy(uploadObjects = s.uploadObjects.toSet.union(dumbObjects.toSet).toList )
+        )
+        filesDownloads = currentState.fileDownloads
+        //      _______________________________________________________
         maxDownloads = config.maxDownloads
-//         numFiles     = config.numFiles
-        numFiles     = zipped.length
-//        randomGen    = new MersenneTwister(config.seed)
-//        randomBas    = new RandBasis(randomGen)
-//        dist         = Pareto(scale= config.paretoScale,shape = config.paretoShape)(rand = randomBas)
-        dist = currentState.pareto
+        numFiles     = dumbObjects.length
+        dist         = currentState.pareto
+
         samples      = (0 until config.consumerIterations).map(_=>
+
             dist.sample(numFiles)
               .map(_.ceil.toInt)
-              .sorted.map(x=>if(x>maxDownloads) maxDownloads else x).toList
+              .sorted
+              .map(x=>if(x>maxDownloads) maxDownloads else x).toList
           ).toList
-        _           <- consumeFiles(zipped,samples)(ctx).compile.drain.start
+
+        downloadTrace = if (ctx.config.fromConsumerFile) dumbObjects.map{ o=>
+            val downloads = currentState.fileDownloads.getOrElse(o.objectId,0)
+            DownloadTrace(o,downloads)
+          } :: Nil
+        else samples.map{ sample=>
+          (dumbObjects zip sample).map {
+            case (o,s) => DownloadTrace(o,s)
+          }
+        }
+
+        _           <- ctx.logger.debug(samples.toString)
+        _           <- consumeFiles(dumbObjects,samples)(ctx).compile.drain.start
+        _           <- ctx.logger.debug("________________________________________________________")
+
         response    <- Ok(s"START_CONSUMING")
       } yield response
     }
   ).orNotFound
+
+  def consumeFilesV2(downloadsTraces:List[List[DownloadTrace]])(implicit ctx:AppContextv2) = {
+    Stream.emits(downloadsTraces).zipWithIndex.flatMap {
+      case (dTs,index) => for {
+        _               <- ctx.logger.debug(s"ITERATION[$index]").pureS
+        currentState    <- ctx.state.get.pureS
+        poolUrl         = ctx.config.poolUrl
+        consumerId      = ctx.config.nodeId
+        staticExtension = ctx.config.staticExtension
+        maxConcurrent   = ctx.config.maxConcurrent
+        client          = ctx.client
+        res             <- Stream.emits(dTs).covary[IO].parEvalMapUnordered(maxConcurrent = maxConcurrent){
+          case dt@DownloadTrace(dumbObject,downloads) =>
+            val objectId   = dumbObject.objectId
+            val objectSize = dumbObject.size
+//            val downloadsCounter =
+            Stream.range(start= 0,stopExclusive=downloads).flatMap{ intraIndex =>
+              for {
+                _               <- ctx.logger.debug(s"DOWNLOAD_COUNTER $objectId $index/$intraIndex/$downloads").pureS
+                startAt         <- IO.monotonic.map(_.toNanos).pureS
+                operationId     = UUID.randomUUID().toString
+                request         = readRequestv2(poolUrl =poolUrl, objectId = objectId, objectSize= objectSize, consumerId=consumerId, staticExtension = staticExtension,operationId=operationId)
+                response0       <- client.stream(request)
+                  .onError{ e=>
+                    ctx.logger.error(e.getMessage).pureS
+                  }
+                _               <- ctx.logger.debug(s"FIRST_REQUEST_SUCCESS ${response0.status}").pureS
+                nodeUrl         <- response0.as[String].pureS.evalMap(x=>ctx.logger.debug(s"SELECTED_NODE_URL $x")*>Helpers.toURL(x).pure[IO])
+                //                _               <- ctx.logger.debug("NODE_URL "+nodeUrl).pureS
+                headers0        = response0.headers
+                selectedNodeId  = headers0.get(CIString("Node-Id")).map(_.head.value).getOrElse(ctx.config.nodeId)
+                waitingTime0    = headers0.get(CIString("Waiting-Time")).flatMap(_.head.value.toLongOption).getOrElse(0L)
+                serviceTime0    = headers0.get(CIString("Service-Time")).flatMap(_.head.value.toLongOption).getOrElse(0L)
+                endAt           <- IO.monotonic.map(_.toNanos).pureS
+                responseTime0    = endAt - startAt
+                //              REQUEST - 1
+                request1        = baseReadRequestV2(nodeUrl)(objectSize=objectSize,consumerId=consumerId,staticExtension=staticExtension,operationId=operationId)
+                startAt1        <- IO.monotonic.map(_.toNanos).pureS
+                response1       <- client.stream(request1).onError{ e=>
+                  ctx.logger.error(e.getMessage).pureS
+                }
+
+                _               <- ctx.logger.debug(s"SECOND_REQUEST_SUCCESS ${response1.status}").pureS
+                //              ?
+                headers1        = response1.headers
+                waitingTime1    = headers1.get(CIString("Waiting-Time")).flatMap(_.head.value.toLongOption).getOrElse(0L)
+                serviceTime1    = headers1.get(CIString("Service-Time")).flatMap(_.head.value.toLongOption).getOrElse(0L)
+                body            = response1.body
+                writeS          = body.through(Files[IO].writeAll(Paths.get(SINK_PATH.toString,s"$operationId.$staticExtension")))
+                //
+                _               <- if(ctx.config.writeOnDisk) writeS else IO.unit.pureS
+                level           = headers1.get(CIString("Level")).map(_.head.value).getOrElse("LOCAL")
+                endAt1          <- IO.monotonic.map(_.toNanos).pureS
+                responseTime1   = endAt1 - startAt1
+                _               <- ctx.logger.info(s"DOWNLOAD,$selectedNodeId,$objectId,$objectSize,$responseTime0,$responseTime1,$serviceTime0,$serviceTime1,$waitingTime0,$waitingTime1,$level,$operationId").pureS
+                _               <- ctx.logger.debug("_______________________________________________").pureS
+                _ <- IO.sleep(1 second).pureS
+              } yield ()
+            }.compile.drain.onError{ t=>
+              ctx.errorLogger.error(t.getMessage)
+            }
+        }
+        _ <- ctx.logger.debug("_________________________________________").pureS
+      } yield ()
+    }
+  }
 
   def  consumeFiles(uploadedFiles:List[DumbObject],samples:List[List[Int]])(implicit ctx:AppContextv2): Stream[IO, Unit] = {
 //    Stream.range(0,ctx.config.consumerIterations).flatMap{ index =>
@@ -145,11 +267,6 @@ object Main extends IOApp{
       for {
         _               <- ctx.logger.debug(s"ITERATION[$index]").pureS
         currentState    <- ctx.state.get.pureS
-//        uploadedFiles   = currentState.uploadObjects
-//        numFiles        = ctx.config.numFiles
-//        dist            = currentState.pareto
-//        sample          =
-//          dist.sample(numFiles).map(_.ceil.toInt).sorted.map(x=>if(x>ctx.config.maxDownloads) ctx.config.maxDownloads else x)
         _               <- ctx.logger.debug(s"SAMPLE $sample").pureS
         fileIdDownloads = uploadedFiles.zip(sample)
         poolUrl         = ctx.config.poolUrl
@@ -163,70 +280,85 @@ object Main extends IOApp{
             val objectSize = dumbObject.size
             Stream.range(start= 0,stopExclusive=downloadsCounter).flatMap{ intraIndex =>
               for {
-                _               <- Stream.eval(ctx.logger.debug(s"DOWNLOAD_COUNTER $objectId $index/$intraIndex/$downloadsCounter"))
-                startAt         <- Stream.eval(IO.monotonic.map(_.toNanos))
+                _               <- ctx.logger.debug(s"DOWNLOAD_COUNTER $objectId $index/$intraIndex/$downloadsCounter").pureS
+                startAt         <- IO.monotonic.map(_.toNanos).pureS
                 operationId     = UUID.randomUUID().toString
                 request         = readRequestv2(poolUrl =poolUrl, objectId = objectId, objectSize= objectSize, consumerId=consumerId, staticExtension = staticExtension,operationId=operationId)
                 response0       <- client.stream(request)
-                _               <- Stream.eval(ctx.logger.debug(s"FIRST_REQUEST_SUCCESS ${response0.status}"))
-                nodeUrl         <- Stream.eval(response0.as[String])
-                _               <- Stream.eval(ctx.logger.debug("NODE_URL "+nodeUrl))
+                  .onError{ e=>
+                  ctx.logger.error(e.getMessage).pureS
+                }
+                _               <- ctx.logger.debug(s"FIRST_REQUEST_SUCCESS ${response0.status}").pureS
+                nodeUrl         <- response0.as[String].pureS.evalMap(x=>ctx.logger.debug(s"SELECTED_NODE_URL $x")*>Helpers.toURL(x).pure[IO])
+//                _               <- ctx.logger.debug("NODE_URL "+nodeUrl).pureS
                 headers0        = response0.headers
                 selectedNodeId  = headers0.get(CIString("Node-Id")).map(_.head.value).getOrElse(ctx.config.nodeId)
+                waitingTime0    = headers0.get(CIString("Waiting-Time")).flatMap(_.head.value.toLongOption).getOrElse(0L)
                 endAt           <- IO.monotonic.map(_.toNanos).pureS
                 serviceTime0    = endAt - startAt
                 //              REQUEST - 1
                 request1        = baseReadRequestV2(nodeUrl)(objectSize=objectSize,consumerId=consumerId,staticExtension=staticExtension,operationId=operationId)
                 startAt1        <- IO.monotonic.map(_.toNanos).pureS
-                response1       <- client.stream(request1)
+                response1       <- client.stream(request1).onError{ e=>
+                  ctx.logger.error(e.getMessage).pureS
+                }
+
                 _               <- ctx.logger.debug(s"SECOND_REQUEST_SUCCESS ${response1.status}").pureS
+//              ?
                 headers1        = response1.headers
+                waitingTime1    = headers1.get(CIString("Waiting-Time")).flatMap(_.head.value.toLongOption).getOrElse(0L)
                 body            = response1.body
                 writeS          = body.through(Files[IO].writeAll(Paths.get(SINK_PATH.toString,s"$operationId.$staticExtension")))
+//
                 _               <- if(ctx.config.writeOnDisk) writeS else IO.unit.pureS
                 level           = headers1.get(CIString("Level")).map(_.head.value).getOrElse("LOCAL")
                 endAt1          <- IO.monotonic.map(_.toNanos).pureS
                 serviceTime1    = endAt1 - startAt1
-                _               <- ctx.logger.info(s"DOWNLOAD,$selectedNodeId,$objectId,$objectSize,$serviceTime0,$serviceTime1,$level,$operationId").pureS
+                _               <- ctx.logger.info(s"DOWNLOAD,$selectedNodeId,$objectId,$objectSize,$serviceTime0,$serviceTime1,$waitingTime0,$waitingTime1,$level,$operationId").pureS
                 _                <- ctx.logger.debug("_______________________________________________").pureS
                 _ <- IO.sleep(1 second).pureS
               } yield ()
             }.compile.drain.onError{ t=>
               ctx.errorLogger.error(t.getMessage)
             }
-          //            .start
-          //            .start
         }
+        _ <- ctx.logger.debug("_________________________________________").pureS
       } yield ()
     }
   }
 
   def consumer()= {
+    val BASE_FOLDER_PATH         = Paths.get(config.workloadFolder)
+    val READ_BASE_FOLDER_PATH   = BASE_FOLDER_PATH.resolve("reads")
     for {
-      startTime    <- IO.monotonic.map(_.toSeconds)
-      randomGen    = new MersenneTwister(config.seed)
-      randomBas    = new RandBasis(randomGen)
-      dist         = Pareto(scale= config.paretoScale,shape = config.paretoShape)(rand = randomBas)
-      //      dist               = Pareto(scale = config.paretoScale,shape = config.paretoShape)(rand = r
+      startTime          <- IO.monotonic.map(_.toSeconds)
+      randomGen          = new MersenneTwister(config.seed)
+      randomBas          = new RandBasis(randomGen)
+      dist               = Pareto(scale= config.paretoScale,shape = config.paretoShape)(rand = randomBas)
+//
+      basePort           = config.consumerPort
+      consumerIndex      = config.consumerIndex
+      fromConsumerFile   = config.fromConsumerFile
+      consumerFileName   = s"${config.nodeId}.json"
+      consumerFilePath   = READ_BASE_FOLDER_PATH.resolve(consumerFileName)
+      consumerFileStr    <- Helpers.bytesToString(consumerFilePath)
+      consumerFileJson   <- Helpers.decodeConsumerFile(consumerFileStr)
+//      _                  <- un.debug(consumerFileJson.toString)
       initState          = AppStateV2(
-        pareto = dist
+        pareto = dist,
+        fileDownloads = consumerFileJson
       )
       state              <- IO.ref(initState)
       (client,finalizer) <- clientResource.allocated
       ctx                = AppContextv2(config=config,state=state,logger=unsafeLogger,errorLogger = unsafeErrorLogger,client=client)
-      basePort           = ctx.config.consumerPort
-      consumerIndex      = ctx.config.consumerIndex
       consumerPort       = if(ctx.config.level=="LOCAL" ) ctx.config.consumerPort + ctx.config.consumerIndex else ctx.config.consumerPort
-//        basePort+consumerIndex
       _                  <- ctx.logger.debug(s"CONSUMER_START consumer-$consumerIndex on port $consumerPort")
-
       serverIO           <- BlazeServerBuilder[IO](global)
         .bindHttp(consumerPort,"0.0.0.0")
         .withHttpApp(httpApp = consumerHttpApp()(ctx))
         .serve
         .compile
         .drain
-//      _                  <- serverIO.cancel
       endTime            <- IO.monotonic.map(_.toSeconds)
       _                  <- ctx.logger.info(s"TOTAL_TIME,0,0,0,0,0,0,${endTime - startTime}")
       _                  <- finalizer

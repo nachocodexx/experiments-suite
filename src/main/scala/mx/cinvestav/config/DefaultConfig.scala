@@ -30,6 +30,11 @@ case class DefaultConfig(
                           paretoShape:Double,
                           paretoScale:Double,
                           maxDownloads:Int,
-                          consumerIterations:Int
-
+                          consumerIterations:Int,
+                          writeDebug:Boolean,
+                          readDebug:Boolean,
+                          mode:String ="LOCAL",
+                          fromConsumerFile:Boolean,
+                          producerRate:Long,
+                          producerMode:String
                         )

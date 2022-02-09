@@ -70,7 +70,7 @@ object MainV4 extends IOApp{
   def processWrite(client: Client[IO])(t:Trace)(implicit ctx:AppContext) = {
     for {
       _           <- IO.unit
-      waitingTime = t.interArrivalTime.milliseconds
+      waitingTime = t.waitingTime.milliseconds
 //      _           <- ctx.logger.debug(s"WAITING ${t.fileId} $waitingTime")
       _           <- IO.sleep(waitingTime)
       beforeW     <- IO.monotonic.map(_.toNanos)
@@ -114,7 +114,7 @@ object MainV4 extends IOApp{
   def processRead(client: Client[IO])(t:Trace)(implicit ctx:AppContext):IO[Boolean] = {
     for {
       _                <- IO.unit
-      waitingTime      = t.interArrivalTime.milliseconds
+      waitingTime      = t.waitingTime.milliseconds
       _                <- IO.sleep(waitingTime)
       arrivalTimeNanos <- IO.monotonic.map(_.toNanos)
       request          = readRequest(t)

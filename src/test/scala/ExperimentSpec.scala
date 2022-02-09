@@ -7,11 +7,19 @@ import io.circe.generic.auto._
 import io.circe.syntax._
 import mx.cinvestav.commons.events.{AddedNode, Downloaded, EventX, Evicted, Get, Missed, Put, Uploaded}
 
+import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.nio.file.Paths
 
 class ExperimentSpec extends munit .CatsEffectSuite {
 
+  test("Net"){
+    val _uri ="http://127.0.0.1:6666/api/v2"
+    val uri  = new URL(_uri)
+    val u    = new URL(uri.getProtocol,"my-node",uri.getPort,uri.getPath)
+    println(u)
+//    uri.
+  }
 //  val basevent = Put(
 //        eventId = "",
 //        serialNumber = 0,

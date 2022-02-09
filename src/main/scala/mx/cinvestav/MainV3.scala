@@ -64,7 +64,7 @@ object MainV3 extends IOApp{
   }
 
   def processDownloadV2(t:Trace,client: Client[IO])(implicit ctx:AppContext)= for {
-    _               <- IO.sleep(t.interArrivalTime milliseconds)
+    _               <- IO.sleep(t.waitingTime milliseconds)
     currentState    <- ctx.state.get
     fileId          = t.fileId
     alreadyUploaded = currentState.uploadObjects.contains(fileId)
@@ -117,7 +117,7 @@ object MainV3 extends IOApp{
   } yield ()
 
   def processWriteV2(t:Trace,client: Client[IO])(implicit ctx:AppContext)= for {
-    _              <- IO.sleep(t.interArrivalTime milliseconds)
+    _              <- IO.sleep(t.waitingTime milliseconds)
     beforeW        <- IO.monotonic.map(_.toNanos)
     response       <- client.toHttpApp.run(writeRequestV2(ctx.config.poolUrl)(t))
     nodeURL        <- response.as[String]
