@@ -24,6 +24,8 @@ public class MySampleLayout extends LayoutBase<ILoggingEvent> {
             sbuf
                     .append(event.getTimeStamp())
                     .append(",")
+                    .append(level)
+                    .append(",")
                     .append(threadName)
                     .append(",")
                     .append(message)

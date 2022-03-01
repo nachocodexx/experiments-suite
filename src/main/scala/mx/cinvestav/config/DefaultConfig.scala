@@ -6,15 +6,10 @@ case class CacheNode(host:String,port:Int){
 }
 case class DefaultConfig(
                           nodeId:String,
-                          loadBalancer:String,
-                          workloadPath:String,
-                          workloadFilename:String,
-                          cacheNodes:List[CacheNode],
                           sourceFolder:String,
                           sinkFolder:String,
                           staticExtension:String,
                           poolUrl:String,
-                          drop:Int,
                           workloadFolder:String,
                           maxConcurrent:Int,
                           writeOnDisk:Boolean,
@@ -22,7 +17,7 @@ case class DefaultConfig(
                           role:String,
                           consumerIndex:Int,
                           consumerPort:Int,
-                          level:String,
+//                          level:String,
                           producerIndex:Int,
                           numFiles:Int,
                           maxDurationMs:Long,
@@ -33,8 +28,10 @@ case class DefaultConfig(
                           consumerIterations:Int,
                           writeDebug:Boolean,
                           readDebug:Boolean,
-                          mode:String ="LOCAL",
                           fromConsumerFile:Boolean,
                           producerRate:Long,
-                          producerMode:String
+                          producerMode:String,
+                          consumerMode:String,
+                          consumerRate:Long,
+                          appMode:String
                         )
