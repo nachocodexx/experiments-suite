@@ -6,6 +6,24 @@ import breeze.stats.distributions.{Gaussian, Pareto, Poisson, RandBasis, Uniform
 import org.apache.commons.math3.random.MersenneTwister
 class DistributionsSpec extends munit .CatsEffectSuite {
 
+  test("a"){
+    val xs = List(0,1,2,3)
+    scala.util.Random.setSeed(1)
+    val x = scala.util.Random.shuffle(xs)
+    case class Product(id:String,price:Double,metadata:Map[String,String ]=  Map.empty[String,String]) {
+      def discount(amount: Double): Product =
+        Product(
+          id = id,
+          price =  price-(amount * price),
+          metadata = Map("OLD_PRICE"->price.toString)
+        )
+    }
+    val p0 = Product(id = "a",price = 10).discount(.25)
+    println(p0)
+//    val discount = 0.25
+//    val price    =
+    println(x)
+  }
   test("test"){
 //    val u = Uniform(0,1)
 //    val u = Gaussian(0,1)

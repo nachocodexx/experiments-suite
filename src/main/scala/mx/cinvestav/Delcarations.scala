@@ -5,7 +5,6 @@ import cats.data.NonEmptyList
 import cats.effect.kernel.Fiber
 import cats.effect.{FiberIO, IO, Ref}
 import io.circe.{Decoder, HCursor}
-import mx.cinvestav.Main1.{CacheWorkload, config}
 import mx.cinvestav.config.DefaultConfig
 import org.http4s.client.Client
 import org.http4s.{Header, Headers, HttpVersion, MediaType, Method, Request, Uri, headers}
@@ -21,23 +20,23 @@ object Delcarations {
   object Implicits {
 
     implicit val traceDecoder:Decoder[Trace] = (c: HCursor) => for {
-      arrivalTime <- c.downField("arrivalTime").as[Double]
-      consumerId <- c.downField("consumerId").as[String]
+      arrivalTime <- c.downField("arrivalTime").as[Long]
+//      consumerId <- c.downField("consumerId").as[String]
       fileId <- c.downField("fileId").as[String]
       fileSize <- c.downField("fileSize").as[Long]
       operationId <- c.downField("operationId").as[String]
-      operationType <- c.downField("operationType").as[String]
-      producerId <- c.downField("producerId").as[String]
-      waitingTime <- c.downField("interArrivalTime").as[Double]
+//      operationType <- c.downField("operationType").as[String]
+//      producerId <- c.downField("producerId").as[String]
+//      waitingTime <- c.downField("waitingTime").as[Double]
       trace = Trace(
         arrivalTime = arrivalTime,
-        consumerId = consumerId,
+//        consumerId = consumerId,
         fileId = fileId,
         fileSize = fileSize,
         operationId = operationId,
-        operationType = operationType,
-        producerId = producerId,
-        waitingTime = waitingTime
+//        operationType = operationType,
+//        producerId = producerId,
+//        waitingTime = waitingTime
       )
     } yield trace
   }
@@ -66,15 +65,22 @@ object Delcarations {
   case class AppContext(config:DefaultConfig, state:Ref[IO,AppState], logger:Logger[IO],errorLogger:Logger[IO],queueLogger:Logger[IO])
   case class AppContextv2(config:DefaultConfig, state:Ref[IO,AppStateV2], logger:Logger[IO],errorLogger:Logger[IO],client:Client[IO])
 
-  case class Trace(arrivalTime:Double, consumerId:String, fileId:String,
-                   fileSize:Long, operationId:String, operationType:String,
-                   producerId:String, waitingTime:Double) {
+  case class Trace(
+                    arrivalTime:Long,
+//                    consumerId:String,
+                    fileId:String,
+                    fileSize:Long,
+                    operationId:String,
+//                    operationType:String,
+//                    producerId:String,
+//                    waitingTime:Double
+                  ) {
     override def toString: String =
-      s"$operationType,$arrivalTime,$consumerId,$fileId,$fileSize,$operationId,$producerId,$waitingTime"
+      s"$fileId,$fileSize,$operationId"
   }
 
 
-  def writeRequestV2(baseUrl:String)(trace:Trace):Request[IO] = {
+  def writeRequestV2(baseUrl:String)(trace:Trace)(implicit ctx:AppContextv2):Request[IO] = {
     val req = Request[IO](
       method = Method.POST,
       uri = Uri.unsafeFromString(s"$baseUrl/upload"),
@@ -83,17 +89,20 @@ object Delcarations {
       .putHeaders(
         Headers(
           Header.Raw(CIString("Operation-Id"),trace.operationId),
-          Header.Raw(CIString("User-Id"),trace.producerId),
+          Header.Raw(CIString("User-Id"),ctx.config.nodeId),
           Header.Raw(CIString("Bucket-Id"), "nacho-bucket" ),
           Header.Raw(CIString("Object-Id"),trace.fileId),
           Header.Raw(CIString("Object-Size"),trace.fileSize.toString),
+          Header.Raw(CIString("Arrival-Time"),trace.arrivalTime.toString)
         )
       )
     req
   }
 
-  def baseWriteRequest(url:String,trace:Trace,sourceFolder:String,staticExtension:String):Request[IO] = {
+  def baseWriteRequest(url:String,trace:Trace,sourceFolder:String,staticExtension:String)(implicit ctx:AppContextv2):Request[IO] = {
     val file = new File(s"$sourceFolder/${trace.fileId}.$staticExtension")
+//    println(file.toPath)
+//    println(s"FILE_EXISTS ${file.exists()}")
     val multipart = Multipart[IO](
       parts = Vector(
         Part.fileData(
@@ -116,10 +125,12 @@ object Delcarations {
       .putHeaders(
         Headers(
           Header.Raw(CIString("Operation-Id"),trace.operationId),
-          Header.Raw(CIString("User-Id"),trace.producerId),
+          Header.Raw(CIString("User-Id"),ctx.config.nodeId),
           Header.Raw(CIString("Bucket-Id"), "nacho-bucket" ),
           Header.Raw(CIString("Object-Id"),trace.fileId),
+//          Header.Raw(CIString("Object-Size"),file.length().toString),
           Header.Raw(CIString("Object-Size"),file.length().toString),
+          Header.Raw(CIString("Arrival-Time"),trace.arrivalTime.toString)
         )
       )
     req
@@ -148,7 +159,7 @@ object Delcarations {
       .putHeaders(
         Headers(
           Header.Raw(CIString("Operation-Id"),trace.operationId),
-          Header.Raw(CIString("User-Id"),trace.producerId),
+          Header.Raw(CIString("User-Id"),ctx.config.nodeId),
           Header.Raw(CIString("Bucket-Id"), "nacho-bucket" ),
           Header.Raw(CIString("Object-Id"),trace.fileId),
           Header.Raw(CIString("Object-Size"),file.length().toString),
@@ -157,21 +168,6 @@ object Delcarations {
     req
   }
 
-  def baseReadRequest(url:String,trace:Trace)(implicit ctx:AppContext):Request[IO] ={
-    //    val file = new File(s"${ctx.config.sourceFolder}/${trace.fileId}.${ctx.config.staticExtension}")
-    val req = Request[IO](
-      method = Method.GET,
-      uri = Uri.unsafeFromString(url),
-      headers = Headers(
-        Header.Raw(CIString("Operation-Id"),trace.operationId),
-        Header.Raw(CIString("User-Id"),trace.consumerId),
-        Header.Raw(CIString("Bucket-Id"),"default"),
-        Header.Raw(CIString("Object-Size"),trace.fileSize.toString),
-        Header.Raw(CIString("Object-Extension"),config.staticExtension),
-      )
-    )
-    req
-  }
   def baseReadRequestV2(url:String)(objectSize:Long,consumerId:String,staticExtension:String,operationId:String = UUID.randomUUID().toString):Request[IO] ={
     val req = Request[IO](
       method = Method.GET,
@@ -187,20 +183,6 @@ object Delcarations {
     req
   }
 
-  def readRequest(trace:Trace)(implicit ctx:AppContext):Request[IO] ={
-    val req = Request[IO](
-      method = Method.GET,
-      uri = Uri.unsafeFromString( s"${ctx.config.poolUrl}/download/${trace.fileId}"),
-      headers = Headers(
-        Header.Raw(CIString("Operation-Id"),trace.operationId),
-        Header.Raw(CIString("User-Id"),trace.consumerId),
-        Header.Raw(CIString("Bucket-Id"),"default"),
-        Header.Raw(CIString("Object-Size"),trace.fileSize.toString),
-        Header.Raw(CIString("Object-Extension"),config.staticExtension),
-      )
-    )
-    req
-  }
   def readRequestv2(
                      poolUrl:String,
                      objectId:String,
