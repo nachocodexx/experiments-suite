@@ -42,10 +42,11 @@ object Main extends IOApp{
   implicit val config: DefaultConfig  = ConfigSource.default.loadOrThrow[DefaultConfig]
   //
   val clientResource: Resource[IO, Client[IO]] = BlazeClientBuilder[IO](global)
-    .withRequestTimeout(5 minutes)
-    .withSocketKeepAlive(true)
-    .withSocketReuseAddress(true)
+    .withRequestTimeout(10 minutes)
     .withConnectTimeout(5 minutes)
+    .withBufferSize(65536)
+    .withMaxWaitQueueLimit(1024)
+    .withIdleTimeout( 5 minutes)
     .resource
 
   implicit val unsafeLogger: SelfAwareStructuredLogger[IO] = Slf4jLogger.getLogger[IO]
