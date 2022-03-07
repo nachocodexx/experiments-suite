@@ -18,8 +18,8 @@ import pureconfig.generic.auto._
 
 object Main extends IOApp{
   implicit val config: DefaultConfig  = ConfigSource.default.loadOrThrow[DefaultConfig]
-  implicit val unsafeLogger = Slf4jLogger.getLogger[IO]
-  val unsafeErrorLogger = Slf4jLogger.getLoggerFromName[IO]("error")
+  implicit val unsafeLogger           = Slf4jLogger.getLogger[IO]
+  val unsafeErrorLogger               = Slf4jLogger.getLoggerFromName[IO]("error")
 
   override def run(args: List[String]): IO[ExitCode] = config.role match {
     case "producer"=>  Producer()(config=config,unsafeLogger = unsafeLogger, unsafeErrorLogger = unsafeErrorLogger)

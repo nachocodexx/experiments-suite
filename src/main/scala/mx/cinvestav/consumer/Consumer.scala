@@ -47,7 +47,6 @@ object Consumer {
 
 
   def consumerHttpApp()(implicit ctx:AppContextv2)= Router[IO](
-    "/consume"  -> HttpRoutes.of[IO]{
     "/v2/consume" -> HttpRoutes.of[IO]{
       case req@POST -> Root => for {
         _            <- ctx.logger.debug(s"START_CONSUMING")
